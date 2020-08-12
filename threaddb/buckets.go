@@ -171,41 +171,59 @@ func init() {
 		Name:    buckets.CollectionName,
 		Schema:  bucketsSchema,
 		Indexes: bucketsIndexes,
-		ValidatorFunc: `
+		WriteValidator: `
 			var type = event.patch.type
 			var patch = event.patch.json_patch
 			switch (type) {
 			  case "create":
-				if (patch.owner !== author) {
-				  return "author must match new bucket owner"
+				if (patch.owner !== writer) {
+				  return "writer must match new bucket owner"
 				}
 				break
 			  case "save":
 				var keys = Object.keys(patch.items)
 				for (i = 0; i < keys.length; i++) {
 				  var p = patch.items[keys[i]]
-				  if (p.acl && author !== instance.owner) {
+				  if (p.acl && writer !== instance.owner) {
 					return "only owner can modify bucket access rules"
 				  }
 				  var x = instance.items[keys[i]]
 				  if (x) {
-					if (x.acl.$w.indexOf(author) === -1) {
-					  return "author does not have write access"
+					if (x.acl.$w.indexOf(writer) === -1) {
+					  return "writer does not have write access"
 					}
 				  } else {
-					if (author !== instance.owner) {
+					if (writer !== instance.owner) {
 					  return "only owner can create new bucket items"
 					}
 				  }
 				}
 				break
 			  case "delete":
-				if (event.patch.owner !== author) {
-				  return "author must match new bucket owner"
+				if (event.patch.owner !== writer) {
+				  return "writer must match bucket owner"
 				}
 				break
 			}
 			return true
+		`,
+		ReadFilter: `
+			if (reader !== instance.owner) {
+			  delete instance.key
+			  delete instance.archives
+			  delete instance.created_at
+			  delete instance.updated_at
+			}
+			var filtered = {}
+			var keys = Object.keys(instance.items)
+			for (i = 0; i < keys.length; i++) {
+			  var x = instance.items[keys[i]]
+			  if (x.acl.$r.indexOf(reader) !== -1) {
+				filtered[keys[i]] = x
+			  }
+			}
+			instance.items = filtered
+			return instance
 		`,
 	}
 }
