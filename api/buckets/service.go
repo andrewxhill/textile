@@ -22,6 +22,7 @@ import (
 	iface "github.com/ipfs/interface-go-ipfs-core"
 	"github.com/ipfs/interface-go-ipfs-core/options"
 	"github.com/ipfs/interface-go-ipfs-core/path"
+	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/textileio/dcrypto"
 	"github.com/textileio/go-threads/core/thread"
 	"github.com/textileio/go-threads/db"
@@ -34,6 +35,7 @@ import (
 	"github.com/textileio/textile/dns"
 	"github.com/textileio/textile/ipns"
 	mdb "github.com/textileio/textile/mongodb"
+	"github.com/textileio/textile/threaddb"
 	tdb "github.com/textileio/textile/threaddb"
 	"github.com/textileio/textile/util"
 	"golang.org/x/sync/errgroup"
@@ -177,6 +179,16 @@ func (s *Service) Init(ctx context.Context, req *pb.InitRequest) (*pb.InitReply,
 
 // createBucket returns a new bucket and seed node.
 func (s *Service) createBucket(ctx context.Context, dbID thread.ID, dbToken thread.Token, name string, key []byte, bootCid cid.Cid) (buck *tdb.Bucket, seed ipld.Node, err error) {
+	var owner thread.PubKey
+	if dbToken.Defined() {
+		owner, err = dbToken.PubKey()
+		if err != nil {
+			return nil, nil, fmt.Errorf("creating bucket: invalid token public key")
+		}
+	} else {
+		owner = getOwnerFromContext(ctx)
+	}
+
 	// Make a random seed, which ensures a bucket's uniqueness
 	seed, err = makeSeed(key)
 	if err != nil {
@@ -204,7 +216,7 @@ func (s *Service) createBucket(ctx context.Context, dbID thread.ID, dbToken thre
 	}
 
 	// Create the bucket, using the IPNS key as instance ID
-	buck, err = s.Buckets.New(ctx, dbID, bkey, pth, tdb.WithNewBucketName(name), tdb.WithNewBucketKey(key), tdb.WithNewBucketToken(dbToken))
+	buck, err = s.Buckets.New(ctx, dbID, bkey, pth, owner, tdb.WithNewBucketName(name), tdb.WithNewBucketKey(key), tdb.WithNewBucketToken(dbToken))
 	if err != nil {
 		return
 	}
@@ -630,6 +642,7 @@ func (s *Service) SetPath(ctx context.Context, req *pb.SetPathRequest) (*pb.SetP
 
 	encKey := buck.GetEncKey()
 	var dirpth path.Resolved
+	now := time.Now()
 	if req.Path == "" {
 		sn, err := makeSeed(encKey)
 		if err != nil {
@@ -652,7 +665,9 @@ func (s *Service) SetPath(ctx context.Context, req *pb.SetPathRequest) (*pb.SetP
 				return nil, fmt.Errorf("updating pinned root: %s", err)
 			}
 		}
+		buck.Items = make(map[string]threaddb.Item)
 	} else {
+		var itemCid cid.Cid
 		if encKey != nil {
 			n, nodes, err := s.newDirFromExistingPath(ctx, remotePath, encKey, nil, "")
 			if err != nil {
@@ -665,6 +680,7 @@ func (s *Service) SetPath(ctx context.Context, req *pb.SetPathRequest) (*pb.SetP
 			if err := s.addAndPinNodes(ctx, nodes); err != nil {
 				return nil, err
 			}
+			itemCid = n.Cid()
 		} else {
 			dirpth, err = s.IPFSClient.Object().AddLink(ctx, buckPath, req.Path, remotePath, options.Object.Create(true))
 			if err != nil {
@@ -673,11 +689,15 @@ func (s *Service) SetPath(ctx context.Context, req *pb.SetPathRequest) (*pb.SetP
 			if err = s.updateOrAddPin(ctx, buckPath, dirpth); err != nil {
 				return nil, fmt.Errorf("updating pinned root: %s", err)
 			}
+			itemCid = remoteCid
+		}
+		if err = buck.UpsertItemAtPath(req.Path, itemCid, now); err != nil {
+			return nil, err
 		}
 	}
 
 	buck.Path = dirpth.String()
-	buck.UpdatedAt = time.Now().UnixNano()
+	buck.UpdatedAt = now.UnixNano()
 	if err = s.Buckets.SaveSafe(ctx, dbID, buck, tdb.WithToken(dbToken)); err != nil {
 		return nil, fmt.Errorf("saving new bucket state: %s", err)
 	}
@@ -1047,8 +1067,12 @@ func (s *Service) PushPath(server pb.API_PushPathServer) error {
 		}
 	}
 
+	now := time.Now()
 	buck.Path = dirpth.String()
-	buck.UpdatedAt = time.Now().UnixNano()
+	if err = buck.UpsertItemAtPath(filePath, fn.Cid(), now); err != nil {
+		return err
+	}
+	buck.UpdatedAt = now.UnixNano()
 	if err = s.Buckets.SaveSafe(server.Context(), dbID, buck, tdb.WithToken(dbToken)); err != nil {
 		return err
 	}
@@ -1498,6 +1522,7 @@ func (s *Service) RemovePath(ctx context.Context, req *pb.RemovePathRequest) (*p
 	}
 
 	buck.Path = dirpth.String()
+	delete(buck.Items, filePath)
 	buck.UpdatedAt = time.Now().UnixNano()
 	if err = s.Buckets.SaveSafe(ctx, dbID, buck, tdb.WithToken(dbToken)); err != nil {
 		return nil, err
@@ -1876,6 +1901,18 @@ func (s *Service) getBucketsTotalSize(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 	return u.BucketsTotalSize, nil
+}
+
+func getOwnerFromContext(ctx context.Context) thread.PubKey {
+	var pk crypto.PubKey
+	if a := accountFromContext(ctx); a != nil {
+		pk = a.Key
+	} else if u := userFromContext(ctx); u != nil {
+		pk = u.Key
+	} else {
+		return nil
+	}
+	return thread.NewLibp2pPubKey(pk)
 }
 
 func accountFromContext(ctx context.Context) *mdb.Account {

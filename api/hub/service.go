@@ -504,11 +504,6 @@ func (s *Service) destroyAccount(ctx context.Context, a *mdb.Account) error {
 				if err = s.IPNSManager.RemoveKey(ctx, b.Key); err != nil {
 					return err
 				}
-				if b.DNSRecord != "" && s.DNSManager != nil {
-					if err = s.DNSManager.DeleteRecord(b.DNSRecord); err != nil {
-						return err
-					}
-				}
 			}
 			// Delete the entire DB.
 			if err := s.Threads.DeleteDB(ctx, t.ID, db.WithManagedToken(a.Token)); err != nil {

@@ -19,6 +19,8 @@ import (
 	mdb "github.com/textileio/textile/mongodb"
 )
 
+const Version = 1
+
 var (
 	bucketsSchema  *jsonschema.Schema
 	bucketsIndexes = []db.Index{{
@@ -49,23 +51,31 @@ var (
 
 // Bucket represents the buckets threaddb collection schema.
 type Bucket struct {
-	Key       string   `json:"_id"`
-	Name      string   `json:"name"`
-	Path      string   `json:"path"`
-	EncKey    string   `json:"key,omitempty"`
-	DNSRecord string   `json:"dns_record,omitempty"`
-	Archives  Archives `json:"archives"`
-	CreatedAt int64    `json:"created_at"`
-	UpdatedAt int64    `json:"updated_at"`
+	Key       string          `json:"_id"`
+	Owner     string          `json:"owner"`
+	Name      string          `json:"name"`
+	Version   int             `json:"version"`
+	EncKey    string          `json:"key,omitempty"`
+	Path      string          `json:"path"`
+	Items     map[string]Item `json:"items"`
+	Archives  Archives        `json:"archives"`
+	CreatedAt int64           `json:"created_at"`
+	UpdatedAt int64           `json:"updated_at"`
 }
 
-// GetEncKey returns the encryption key as bytes if present.
-func (b *Bucket) GetEncKey() []byte {
-	if b.EncKey == "" {
-		return nil
-	}
-	key, _ := base64.StdEncoding.DecodeString(b.EncKey)
-	return key
+// Item describes details about a bucket item (a file or folder).
+type Item struct {
+	Cid       string `json:"cid"`
+	ACL       ACL    `json:"acl"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// ACL describes access rules for an item.
+type ACL struct {
+	Write  []string `json:"$w"`
+	Read   []string `json:"$r"`
+	Delete []string `json:"$d"`
 }
 
 // Archives contains all archives for a single bucket.
@@ -84,6 +94,42 @@ type Archive struct {
 type Deal struct {
 	ProposalCid string `json:"proposal_cid"`
 	Miner       string `json:"miner"`
+}
+
+// GetEncKey returns the encryption key as bytes if present.
+func (b *Bucket) GetEncKey() []byte {
+	if b.EncKey == "" {
+		return nil
+	}
+	key, _ := base64.StdEncoding.DecodeString(b.EncKey)
+	return key
+}
+
+// UpsertItemAtPath adds a new item or updates the existing item at path.
+func (b *Bucket) UpsertItemAtPath(pth string, cid cid.Cid, updated time.Time) error {
+	nanos := updated.UnixNano()
+	x, ok := b.Items[pth]
+	if ok && x.Cid != cid.String() {
+		x.Cid = cid.String()
+		x.UpdatedAt = nanos
+		b.Items[pth] = x
+	} else {
+		var acl []string
+		if b.Owner != "" {
+			acl = []string{b.Owner}
+		}
+		b.Items[pth] = Item{
+			Cid: cid.String(),
+			ACL: ACL{
+				Write:  acl,
+				Read:   acl,
+				Delete: acl,
+			},
+			CreatedAt: nanos,
+			UpdatedAt: nanos,
+		}
+	}
+	return nil
 }
 
 // BucketOptions defines options for interacting with buckets.
@@ -125,6 +171,42 @@ func init() {
 		Name:    buckets.CollectionName,
 		Schema:  bucketsSchema,
 		Indexes: bucketsIndexes,
+		ValidatorFunc: `
+			var type = event.patch.type
+			var patch = event.patch.json_patch
+			switch (type) {
+			  case "create":
+				if (patch.owner !== author) {
+				  return "author must match new bucket owner"
+				}
+				break
+			  case "save":
+				var keys = Object.keys(patch.items)
+				for (i = 0; i < keys.length; i++) {
+				  var p = patch.items[keys[i]]
+				  if (p.acl && author !== instance.owner) {
+					return "only owner can modify bucket access rules"
+				  }
+				  var x = instance.items[keys[i]]
+				  if (x) {
+					if (x.acl.$w.indexOf(author) === -1) {
+					  return "author does not have write access"
+					}
+				  } else {
+					if (author !== instance.owner) {
+					  return "only owner can create new bucket items"
+					}
+				  }
+				}
+				break
+			  case "delete":
+				if (event.patch.owner !== author) {
+				  return "author must match new bucket owner"
+				}
+				break
+			}
+			return true
+		`,
 	}
 }
 
@@ -167,7 +249,7 @@ func NewBuckets(tc *dbc.Client, pgc *powc.Client, col *mdb.FFSInstances, default
 }
 
 // Create a bucket instance.
-func (b *Buckets) New(ctx context.Context, dbID thread.ID, key string, pth path.Path, opts ...BucketOption) (*Bucket, error) {
+func (b *Buckets) New(ctx context.Context, dbID thread.ID, key string, pth path.Path, owner thread.PubKey, opts ...BucketOption) (*Bucket, error) {
 	args := &BucketOptions{}
 	for _, opt := range opts {
 		opt(args)
@@ -176,15 +258,29 @@ func (b *Buckets) New(ctx context.Context, dbID thread.ID, key string, pth path.
 	if args.Key != nil {
 		encKey = base64.StdEncoding.EncodeToString(args.Key)
 	}
+	if args.Token.Defined() {
+		tokenOwner, err := args.Token.PubKey()
+		if err != nil {
+			return nil, err
+		}
+		if tokenOwner != nil && owner.String() != tokenOwner.String() {
+			return nil, fmt.Errorf("creating bucket: token owner mismatch")
+		}
+	}
 	now := time.Now().UnixNano()
 	bucket := &Bucket{
 		Key:       key,
 		Name:      args.Name,
-		Path:      pth.String(),
+		Version:   Version,
 		EncKey:    encKey,
+		Path:      pth.String(),
+		Items:     make(map[string]Item),
 		Archives:  Archives{Current: Archive{Deals: []Deal{}}, History: []Archive{}},
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if owner != nil {
+		bucket.Owner = owner.String()
 	}
 	id, err := b.Create(ctx, dbID, bucket, WithToken(args.Token))
 	if err != nil {
@@ -195,7 +291,6 @@ func (b *Buckets) New(ctx context.Context, dbID thread.ID, key string, pth path.
 	if err := b.createFFSInstance(ctx, key); err != nil {
 		return nil, fmt.Errorf("creating FFS instance for bucket: %s", err)
 	}
-
 	return bucket, nil
 }
 
@@ -244,6 +339,9 @@ func (b *Buckets) SaveSafe(ctx context.Context, dbID thread.ID, bucket *Bucket, 
 }
 
 func ensureNoNulls(b *Bucket) {
+	if b.Items == nil {
+		b.Items = make(map[string]Item)
+	}
 	if len(b.Archives.History) == 0 {
 		current := b.Archives.Current
 		if len(current.Deals) == 0 {

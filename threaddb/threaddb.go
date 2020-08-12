@@ -139,5 +139,5 @@ func isInvalidSchemaErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "instance doesn't correspond to schema: (root)")
+	return strings.Contains(err.Error(), "instance doesn't correspond to schema:")
 }

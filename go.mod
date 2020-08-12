@@ -6,6 +6,8 @@ replace github.com/ipfs/go-datastore v0.4.4 => github.com/textileio/go-datastore
 
 replace github.com/ipfs/go-ds-badger v0.2.4 => github.com/textileio/go-ds-badger v0.2.5-0.20200728212847-1ec9ac5e644c
 
+replace github.com/textileio/go-threads => ../go-threads
+
 require (
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
 	github.com/alecthomas/jsonschema v0.0.0-20191017121752-4bb6e3fae4f2
