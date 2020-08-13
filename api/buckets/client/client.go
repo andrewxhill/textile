@@ -9,6 +9,7 @@ import (
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/interface-go-ipfs-core/path"
 	pb "github.com/textileio/textile/api/buckets/pb"
+	"github.com/textileio/textile/buckets"
 	"github.com/textileio/textile/util"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -313,6 +314,39 @@ func (c *Client) RemovePath(ctx context.Context, key, pth string, opts ...Option
 		return nil, err
 	}
 	return util.NewResolvedPath(res.Root.Path)
+}
+
+// GetPathAccessRoles returns access roles for a path.
+func (c *Client) GetPathAccessRoles(ctx context.Context, key, pth string) (map[string]buckets.Role, error) {
+	res, err := c.c.GetPathAccessRoles(ctx, &pb.GetPathAccessRolesRequest{
+		Key:  key,
+		Path: pth,
+	})
+	if err != nil {
+		return nil, err
+	}
+	roles := make(map[string]buckets.Role)
+	for pk, r := range res.Roles {
+		roles[pk] = buckets.Role(r)
+	}
+	return roles, nil
+}
+
+// EditPathAccessRoles updates path access roles by merging the given roles with existing roles.
+// roles is a map of string marshaled public keys to path roles. A non-nil error is returned
+// if the map keys are not unmarshalable to public keys.
+// To delete a role for a public key, set its value to buckets.None.
+func (c *Client) EditPathAccessRoles(ctx context.Context, key, pth string, roles map[string]buckets.Role) error {
+	pbroles := make(map[string]pb.PathAccessRole)
+	for pk, r := range roles {
+		pbroles[pk] = pb.PathAccessRole(r)
+	}
+	_, err := c.c.EditPathAccessRoles(ctx, &pb.EditPathAccessRolesRequest{
+		Key:   key,
+		Path:  pth,
+		Roles: pbroles,
+	})
+	return err
 }
 
 // Archive creates a Filecoin bucket archive via Powergate.

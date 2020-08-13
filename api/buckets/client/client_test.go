@@ -3,15 +3,19 @@ package client_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"io/ioutil"
 	"os"
 	"sort"
 	"strings"
 	"testing"
 
+	bucks "github.com/textileio/textile/buckets"
+
 	ipfsfiles "github.com/ipfs/go-ipfs-files"
 	httpapi "github.com/ipfs/go-ipfs-http-client"
 	"github.com/ipfs/interface-go-ipfs-core/path"
+	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tc "github.com/textileio/go-threads/api/client"
@@ -237,6 +241,36 @@ func listPath(t *testing.T, ctx context.Context, client *c.Client, private bool)
 	})
 }
 
+func TestClient_ListIpfsPath(t *testing.T) {
+	t.Parallel()
+	ctx, client := setup(t)
+
+	file1, err := os.Open("testdata/file1.jpg")
+	require.NoError(t, err)
+	defer file1.Close()
+	file2, err := os.Open("testdata/file2.jpg")
+	require.NoError(t, err)
+	defer file2.Close()
+
+	ipfs, err := httpapi.NewApi(util.MustParseAddr("/ip4/127.0.0.1/tcp/5001"))
+	require.NoError(t, err)
+	p, err := ipfs.Unixfs().Add(
+		ctx,
+		ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
+			"file1.jpg": ipfsfiles.NewReaderFile(file1),
+			"folder1": ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
+				"file2.jpg": ipfsfiles.NewReaderFile(file2),
+			}),
+		}),
+	)
+	require.NoError(t, err)
+
+	r, err := client.ListIpfsPath(ctx, p)
+	require.NoError(t, err)
+	require.True(t, r.Item.IsDir)
+	require.Len(t, r.Item.Items, 2)
+}
+
 func TestClient_PushPath(t *testing.T) {
 	t.Parallel()
 	ctx, client := setup(t)
@@ -410,6 +444,102 @@ func pushPath(t *testing.T, ctx context.Context, client *c.Client, private bool)
 	assert.Equal(t, 3, len(rep3.Item.Items))
 }
 
+func TestClient_PullPath(t *testing.T) {
+	t.Parallel()
+	ctx, client := setup(t)
+
+	t.Run("public", func(t *testing.T) {
+		pullPath(t, ctx, client, false)
+	})
+
+	t.Run("private", func(t *testing.T) {
+		pullPath(t, ctx, client, true)
+	})
+}
+
+func pullPath(t *testing.T, ctx context.Context, client *c.Client, private bool) {
+	buck, err := client.Init(ctx, c.WithPrivate(private))
+	require.NoError(t, err)
+
+	file, err := os.Open("testdata/file1.jpg")
+	require.NoError(t, err)
+	defer file.Close()
+	_, _, err = client.PushPath(ctx, buck.Root.Key, "file1.jpg", file)
+	require.NoError(t, err)
+
+	tmp, err := ioutil.TempFile("", "")
+	require.NoError(t, err)
+	defer tmp.Close()
+
+	progress := make(chan int64)
+	go func() {
+		for p := range progress {
+			t.Logf("progress: %d", p)
+		}
+	}()
+	err = client.PullPath(ctx, buck.Root.Key, "file1.jpg", tmp, c.WithProgress(progress))
+	require.NoError(t, err)
+	info, err := tmp.Stat()
+	require.NoError(t, err)
+	t.Logf("wrote file with size %d", info.Size())
+
+	note := "baps!"
+	_, _, err = client.PushPath(ctx, buck.Root.Key, "one/two/note.txt", strings.NewReader(note))
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	err = client.PullPath(ctx, buck.Root.Key, "one/two/note.txt", &buf)
+	require.NoError(t, err)
+	assert.Equal(t, note, buf.String())
+}
+
+func TestClient_PullIpfsPath(t *testing.T) {
+	t.Parallel()
+	ctx, client := setup(t)
+
+	file1, err := os.Open("testdata/file1.jpg")
+	require.NoError(t, err)
+	defer file1.Close()
+	file2, err := os.Open("testdata/file2.jpg")
+	require.NoError(t, err)
+	defer file2.Close()
+
+	ipfs, err := httpapi.NewApi(util.MustParseAddr("/ip4/127.0.0.1/tcp/5001"))
+	require.NoError(t, err)
+	p, err := ipfs.Unixfs().Add(
+		ctx,
+		ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
+			"file1.jpg": ipfsfiles.NewReaderFile(file1),
+			"folder1": ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
+				"file2.jpg": ipfsfiles.NewReaderFile(file2),
+			}),
+		}),
+	)
+	require.NoError(t, err)
+
+	tmpFile, err := ioutil.TempFile("", "")
+	require.NoError(t, err)
+	defer tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	tmpName := tmpFile.Name()
+
+	err = client.PullIpfsPath(ctx, path.Join(p, "folder1/file2.jpg"), tmpFile)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	file2, err = os.Open("testdata/file2.jpg")
+	require.NoError(t, err)
+	defer file2.Close()
+	origBytes, err := ioutil.ReadAll(file2)
+	require.NoError(t, err)
+	tmpFile, err = os.Open(tmpName)
+	require.NoError(t, err)
+	defer tmpFile.Close()
+	tmpBytes, err := ioutil.ReadAll(tmpFile)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(origBytes, tmpBytes))
+}
+
 func TestClient_SetPath(t *testing.T) {
 	t.Parallel()
 
@@ -532,55 +662,6 @@ func setPath(t *testing.T, private bool) {
 	}
 }
 
-func TestClient_PullPath(t *testing.T) {
-	t.Parallel()
-	ctx, client := setup(t)
-
-	t.Run("public", func(t *testing.T) {
-		pullPath(t, ctx, client, false)
-	})
-
-	t.Run("private", func(t *testing.T) {
-		pullPath(t, ctx, client, true)
-	})
-}
-
-func pullPath(t *testing.T, ctx context.Context, client *c.Client, private bool) {
-	buck, err := client.Init(ctx, c.WithPrivate(private))
-	require.NoError(t, err)
-
-	file, err := os.Open("testdata/file1.jpg")
-	require.NoError(t, err)
-	defer file.Close()
-	_, _, err = client.PushPath(ctx, buck.Root.Key, "file1.jpg", file)
-	require.NoError(t, err)
-
-	tmp, err := ioutil.TempFile("", "")
-	require.NoError(t, err)
-	defer tmp.Close()
-
-	progress := make(chan int64)
-	go func() {
-		for p := range progress {
-			t.Logf("progress: %d", p)
-		}
-	}()
-	err = client.PullPath(ctx, buck.Root.Key, "file1.jpg", tmp, c.WithProgress(progress))
-	require.NoError(t, err)
-	info, err := tmp.Stat()
-	require.NoError(t, err)
-	t.Logf("wrote file with size %d", info.Size())
-
-	note := "baps!"
-	_, _, err = client.PushPath(ctx, buck.Root.Key, "one/two/note.txt", strings.NewReader(note))
-	require.NoError(t, err)
-
-	var buf bytes.Buffer
-	err = client.PullPath(ctx, buck.Root.Key, "one/two/note.txt", &buf)
-	require.NoError(t, err)
-	assert.Equal(t, note, buf.String())
-}
-
 func TestClient_Remove(t *testing.T) {
 	t.Parallel()
 	ctx, client := setup(t)
@@ -661,81 +742,47 @@ func removePath(t *testing.T, ctx context.Context, client *c.Client, private boo
 	assert.Equal(t, 2, len(rep.Item.Items))
 }
 
-func TestClient_ListIpfsPath(t *testing.T) {
+func TestClient_GetPathAccessRoles(t *testing.T) {
 	t.Parallel()
 	ctx, client := setup(t)
 
-	file1, err := os.Open("testdata/file1.jpg")
+	buck, err := client.Init(ctx)
 	require.NoError(t, err)
-	defer file1.Close()
-	file2, err := os.Open("testdata/file2.jpg")
+	file, err := os.Open("testdata/file1.jpg")
 	require.NoError(t, err)
-	defer file2.Close()
-
-	ipfs, err := httpapi.NewApi(util.MustParseAddr("/ip4/127.0.0.1/tcp/5001"))
-	require.NoError(t, err)
-	p, err := ipfs.Unixfs().Add(
-		ctx,
-		ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
-			"file1.jpg": ipfsfiles.NewReaderFile(file1),
-			"folder1": ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
-				"file2.jpg": ipfsfiles.NewReaderFile(file2),
-			}),
-		}),
-	)
+	defer file.Close()
+	_, _, err = client.PushPath(ctx, buck.Root.Key, "file1.jpg", file)
 	require.NoError(t, err)
 
-	r, err := client.ListIpfsPath(ctx, p)
+	roles, err := client.GetPathAccessRoles(ctx, buck.Root.Key, "file1.jpg")
 	require.NoError(t, err)
-	require.True(t, r.Item.IsDir)
-	require.Len(t, r.Item.Items, 2)
+	assert.Len(t, roles, 1)
 }
 
-func TestClient_PullIpfsPath(t *testing.T) {
+func TestClient_EditPathAccessRoles(t *testing.T) {
 	t.Parallel()
 	ctx, client := setup(t)
 
-	file1, err := os.Open("testdata/file1.jpg")
-	require.NoError(t, err)
-	defer file1.Close()
-	file2, err := os.Open("testdata/file2.jpg")
-	require.NoError(t, err)
-	defer file2.Close()
-
-	ipfs, err := httpapi.NewApi(util.MustParseAddr("/ip4/127.0.0.1/tcp/5001"))
-	require.NoError(t, err)
-	p, err := ipfs.Unixfs().Add(
-		ctx,
-		ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
-			"file1.jpg": ipfsfiles.NewReaderFile(file1),
-			"folder1": ipfsfiles.NewMapDirectory(map[string]ipfsfiles.Node{
-				"file2.jpg": ipfsfiles.NewReaderFile(file2),
-			}),
-		}),
-	)
+	buck, err := client.Init(ctx)
 	require.NoError(t, err)
 
-	tmpFile, err := ioutil.TempFile("", "")
+	_, pk, err := crypto.GenerateEd25519Key(rand.Reader)
 	require.NoError(t, err)
-	defer tmpFile.Close()
-	defer func() { _ = os.Remove(tmpFile.Name()) }()
-	tmpName := tmpFile.Name()
+	reader := thread.NewLibp2pPubKey(pk)
+	roles := map[string]bucks.Role{
+		reader.String(): bucks.Reader,
+	}
+	err = client.EditPathAccessRoles(ctx, buck.Root.Key, "nothing/here", roles)
+	require.Error(t, err)
 
-	err = client.PullIpfsPath(ctx, path.Join(p, "folder1/file2.jpg"), tmpFile)
+	file, err := os.Open("testdata/file1.jpg")
 	require.NoError(t, err)
-	tmpFile.Close()
+	defer file.Close()
+	_, _, err = client.PushPath(ctx, buck.Root.Key, "file1.jpg", file)
+	require.NoError(t, err)
 
-	file2, err = os.Open("testdata/file2.jpg")
-	require.NoError(t, err)
-	defer file2.Close()
-	origBytes, err := ioutil.ReadAll(file2)
-	require.NoError(t, err)
-	tmpFile, err = os.Open(tmpName)
-	require.NoError(t, err)
-	defer tmpFile.Close()
-	tmpBytes, err := ioutil.ReadAll(tmpFile)
-	require.NoError(t, err)
-	require.True(t, bytes.Equal(origBytes, tmpBytes))
+	err = client.EditPathAccessRoles(ctx, buck.Root.Key, "file1.jpg", roles)
+	require.Error(t, err)
 }
 
 func TestClose(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/alecthomas/jsonschema"
 	"github.com/ipfs/go-merkledag/dagutils"
+	"github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/textileio/go-threads/core/thread"
@@ -457,6 +458,43 @@ func TestBucket_Watch(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, 2, onlineStateCount)    // 1 for the initial start, 1 for the restart
 	assert.Greater(t, offlineStateCount, 0) // At least one, but could be more as watch retries
+}
+
+func TestBucket_AccessRoles(t *testing.T) {
+	buckets := setup(t)
+	buck, err := buckets.NewBucket(context.Background(), getConf(t, buckets))
+	require.NoError(t, err)
+
+	addRandomFile(t, buck, "file", 1024)
+
+	_, err = buck.PushLocal(context.Background())
+	require.NoError(t, err)
+
+	roles, err := buck.GetPathAccessRoles(context.Background(), "file")
+	require.NoError(t, err)
+	assert.Len(t, roles, 0)
+
+	_, rpk, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	reader := thread.NewLibp2pPubKey(rpk).String()
+	_, wpk, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	writer := thread.NewLibp2pPubKey(wpk).String()
+	all, err := buck.EditPathAccessRoles(context.Background(), "file", map[string]bucks.Role{
+		reader: bucks.Reader,
+		writer: bucks.Writer,
+	})
+	require.NoError(t, err)
+	assert.Len(t, all, 2)
+	assert.Equal(t, bucks.Reader, all[reader])
+	assert.Equal(t, bucks.Writer, all[writer])
+
+	all, err = buck.EditPathAccessRoles(context.Background(), "file", map[string]bucks.Role{
+		reader: bucks.None,
+	})
+	assert.Len(t, all, 1)
+	_, ok := all[reader]
+	assert.False(t, ok)
 }
 
 func addRandomFile(t *testing.T, buck *Bucket, pth string, size int64) string {

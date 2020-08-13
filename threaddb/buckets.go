@@ -65,17 +65,10 @@ type Bucket struct {
 
 // Item describes details about a bucket item (a file or folder).
 type Item struct {
-	Cid       string `json:"cid"`
-	ACL       ACL    `json:"acl"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
-}
-
-// ACL describes access rules for an item.
-type ACL struct {
-	Write  []string `json:"$w"`
-	Read   []string `json:"$r"`
-	Delete []string `json:"$d"`
+	Cid       string                  `json:"cid"`
+	Roles     map[string]buckets.Role `json:"roles"`
+	CreatedAt int64                   `json:"created_at"`
+	UpdatedAt int64                   `json:"updated_at"`
 }
 
 // Archives contains all archives for a single bucket.
@@ -114,17 +107,13 @@ func (b *Bucket) UpsertItemAtPath(pth string, cid cid.Cid, updated time.Time) er
 		x.UpdatedAt = nanos
 		b.Items[pth] = x
 	} else {
-		var acl []string
+		roles := make(map[string]buckets.Role)
 		if b.Owner != "" {
-			acl = []string{b.Owner}
+			roles[b.Owner] = buckets.Admin
 		}
 		b.Items[pth] = Item{
-			Cid: cid.String(),
-			ACL: ACL{
-				Write:  acl,
-				Read:   acl,
-				Delete: acl,
-			},
+			Cid:       cid.String(),
+			Roles:     roles,
 			CreatedAt: nanos,
 			UpdatedAt: nanos,
 		}
@@ -176,38 +165,47 @@ func init() {
 			var patch = event.patch.json_patch
 			switch (type) {
 			  case "create":
-				if (patch.owner !== writer) {
-				  return "writer must match new bucket owner"
-				}
-				break
+			    if (patch.owner !== "" && writer !== patch.owner) {
+			      return "writer must match new bucket owner"
+			    }
+			    break
 			  case "save":
-				var keys = Object.keys(patch.items)
-				for (i = 0; i < keys.length; i++) {
-				  var p = patch.items[keys[i]]
-				  if (p.acl && writer !== instance.owner) {
-					return "only owner can modify bucket access rules"
-				  }
-				  var x = instance.items[keys[i]]
-				  if (x) {
-					if (x.acl.$w.indexOf(writer) === -1) {
-					  return "writer does not have write access"
-					}
-				  } else {
-					if (writer !== instance.owner) {
-					  return "only owner can create new bucket items"
-					}
-				  }
-				}
-				break
+			    if (instance.owner === "") {
+			      return true
+			    }
+			    var keys = Object.keys(patch.items)
+			    for (i = 0; i < keys.length; i++) {
+			      var p = patch.items[keys[i]]
+			      var x = instance.items[keys[i]]
+			      if (x) {
+			        if (!x.roles[writer]) {
+			          x.roles[writer] = 0
+			        }
+			        if (x.roles[writer] < 2) {
+			          return "writer does not have write access"
+			        }
+			        if (p.roles && x.roles[writer] < 3) {
+			          return "writer does not have admin access"
+			        }
+			      } else {
+			        if (writer !== instance.owner) {
+			          return "only owner can create new bucket items"
+			        }
+			      }
+			    }
+			    break
 			  case "delete":
-				if (event.patch.owner !== writer) {
-				  return "writer must match bucket owner"
-				}
-				break
+			    if (instance.owner !== "" && writer !== instance.owner) {
+			      return "writer must match bucket owner"
+			    }
+			    break
 			}
 			return true
 		`,
 		ReadFilter: `
+			if (instance.owner === "") {
+			  return instance
+			}
 			if (reader !== instance.owner) {
 			  delete instance.key
 			  delete instance.archives
@@ -218,8 +216,8 @@ func init() {
 			var keys = Object.keys(instance.items)
 			for (i = 0; i < keys.length; i++) {
 			  var x = instance.items[keys[i]]
-			  if (x.acl.$r.indexOf(reader) !== -1) {
-				filtered[keys[i]] = x
+			  if (x.roles[reader] && x.roles[reader] > 0) {
+			    filtered[keys[i]] = x
 			  }
 			}
 			instance.items = filtered

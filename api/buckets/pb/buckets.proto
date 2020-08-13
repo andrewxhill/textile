@@ -149,6 +149,30 @@ message RemovePathReply {
     Root root = 1;
 }
 
+enum PathAccessRole {
+    None = 0;
+    Reader = 1;
+    Writer = 2;
+    Admin = 3;
+}
+
+message GetPathAccessRolesRequest {
+    string key = 1;
+    string path = 2;
+}
+
+message GetPathAccessRolesReply {
+    map<string, PathAccessRole> roles = 1;
+}
+
+message EditPathAccessRolesRequest {
+    string key = 1;
+    string path = 2;
+    map<string, PathAccessRole> roles = 3;
+}
+
+message EditPathAccessRolesReply {}
+
 message ArchiveRequest {
     string key = 1;
 }
@@ -212,6 +236,8 @@ service API {
     rpc SetPath(SetPathRequest) returns (SetPathReply) {}
     rpc Remove(RemoveRequest) returns (RemoveReply) {}
     rpc RemovePath(RemovePathRequest) returns (RemovePathReply) {}
+    rpc GetPathAccessRoles(GetPathAccessRolesRequest) returns (GetPathAccessRolesReply) {}
+    rpc EditPathAccessRoles(EditPathAccessRolesRequest) returns (EditPathAccessRolesReply) {}
     
     // Archive
     rpc Archive(ArchiveRequest) returns (ArchiveReply) {}

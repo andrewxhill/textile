@@ -215,7 +215,7 @@ func (s *Service) createBucket(ctx context.Context, dbID thread.ID, dbToken thre
 		return
 	}
 
-	// Create the bucket, using the IPNS key as instance ID
+	// Create the bucket using the IPNS key as instance ID
 	buck, err = s.Buckets.New(ctx, dbID, bkey, pth, owner, tdb.WithNewBucketName(name), tdb.WithNewBucketKey(key), tdb.WithNewBucketToken(dbToken))
 	if err != nil {
 		return
@@ -1606,6 +1606,86 @@ func (s *Service) removeNodeAtPath(ctx context.Context, pth path.Path, key []byt
 		}
 	}
 	return path.IpfsPath(np[0].new.Cid()), nil
+}
+
+func (s *Service) GetPathAccessRoles(ctx context.Context, req *pb.GetPathAccessRolesRequest) (*pb.GetPathAccessRolesReply, error) {
+	log.Debugf("received get path access roles request")
+
+	dbID, ok := common.ThreadIDFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("db required")
+	}
+	dbToken, _ := thread.TokenFromContext(ctx)
+
+	filePath, err := parsePath(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	buck := &tdb.Bucket{}
+	err = s.Buckets.Get(ctx, dbID, req.Key, buck, tdb.WithToken(dbToken))
+	if err != nil {
+		return nil, err
+	}
+
+	item, ok := buck.Items[filePath]
+	if !ok {
+		return nil, fmt.Errorf("path does not exist")
+	}
+	pbroles := make(map[string]pb.PathAccessRole)
+	for pk, r := range item.Roles {
+		pbroles[pk] = pb.PathAccessRole(r)
+	}
+	return &pb.GetPathAccessRolesReply{
+		Roles: pbroles,
+	}, nil
+}
+
+func (s *Service) EditPathAccessRoles(ctx context.Context, req *pb.EditPathAccessRolesRequest) (*pb.EditPathAccessRolesReply, error) {
+	log.Debugf("received edit path access roles request")
+
+	dbID, ok := common.ThreadIDFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("db required")
+	}
+	dbToken, _ := thread.TokenFromContext(ctx)
+
+	filePath, err := parsePath(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	buck := &tdb.Bucket{}
+	err = s.Buckets.Get(ctx, dbID, req.Key, buck, tdb.WithToken(dbToken))
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UnixNano()
+	item, ok := buck.Items[filePath]
+	if !ok {
+		return nil, fmt.Errorf("path does not exist")
+	}
+	for k, r := range req.Roles {
+		pk := &thread.Libp2pPubKey{}
+		if err = pk.UnmarshalString(k); err != nil {
+			return nil, fmt.Errorf("unmarshaling role public key: %s", err)
+		}
+		role := buckets.Role(r)
+		if x, ok := item.Roles[pk.String()]; ok && x == role {
+			continue
+		}
+		if r > 0 {
+			item.Roles[pk.String()] = role
+		} else {
+			delete(item.Roles, pk.String())
+		}
+		item.UpdatedAt = now
+	}
+
+	buck.UpdatedAt = time.Now().UnixNano()
+	if err = s.Buckets.SaveSafe(ctx, dbID, buck, tdb.WithToken(dbToken)); err != nil {
+		return nil, fmt.Errorf("saving bucket roles: %s", err)
+	}
+	return &pb.EditPathAccessRolesReply{}, nil
 }
 
 func (s *Service) Archive(ctx context.Context, req *pb.ArchiveRequest) (*pb.ArchiveReply, error) {
