@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tc "github.com/textileio/go-threads/api/client"
+	corenet "github.com/textileio/go-threads/core/net"
 	"github.com/textileio/go-threads/core/thread"
 	nc "github.com/textileio/go-threads/net/api/client"
 	tutil "github.com/textileio/go-threads/util"
@@ -20,6 +21,7 @@ import (
 	hc "github.com/textileio/textile/api/hub/client"
 	hubpb "github.com/textileio/textile/api/hub/pb"
 	c "github.com/textileio/textile/api/users/client"
+	bucks "github.com/textileio/textile/buckets"
 	"github.com/textileio/textile/core"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -529,7 +531,7 @@ func TestAccountBuckets(t *testing.T) {
 
 func TestUserBuckets(t *testing.T) {
 	t.Parallel()
-	conf, users, hub, threads, _, buckets := setup(t)
+	conf, users, hub, threads, net, buckets := setup(t)
 	ctx := context.Background()
 
 	// Signup, create an API key, and sign it for the requests
@@ -577,6 +579,59 @@ func TestUserBuckets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(keys.List))
 	assert.Equal(t, 1, int(keys.List[0].Threads))
+
+	// Try interacting with the bucket as a different user
+	sk2, pk2c, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	tok2, err := threads.GetToken(ctx, thread.NewLibp2pIdentity(sk2))
+	require.NoError(t, err)
+	ctx = thread.NewTokenContext(ctx, tok2)
+	pk2 := thread.NewLibp2pPubKey(pk2c).String()
+
+	// Try to overwrite existing
+	file2, err := os.Open("testdata/file2.jpg")
+	require.NoError(t, err)
+	defer file2.Close()
+	_, _, err = buckets.PushPath(ctx, buck.Root.Key, "file1.jpg", file2)
+	require.Error(t, err) // no path write access
+
+	// Try to add a new path
+	_, _, err = buckets.PushPath(ctx, buck.Root.Key, "file2.jpg", file2)
+	require.Error(t, err) // no new path write access
+
+	// Try to get the path
+	_, err = buckets.ListPath(ctx, buck.Root.Key, "file1.jpg")
+	require.Error(t, err) // no path read access
+
+	// Grant path read access
+	ctx = thread.NewTokenContext(ctx, tok)
+	err = buckets.EditPathAccessRoles(ctx, buck.Root.Key, "file1.jpg", map[string]bucks.Role{
+		pk2: bucks.Reader,
+	})
+	require.NoError(t, err)
+
+	// Try to get the path again
+	ctx = thread.NewTokenContext(ctx, tok2)
+	_, err = buckets.ListPath(ctx, buck.Root.Key, "file1.jpg")
+	require.NoError(t, err) // no path read access
+
+	// Grant path write access
+	ctx = thread.NewTokenContext(ctx, tok)
+	err = buckets.EditPathAccessRoles(ctx, buck.Root.Key, "file1.jpg", map[string]bucks.Role{
+		pk2: bucks.Writer,
+	})
+	require.NoError(t, err)
+
+	// Try to write to the path again
+	ctx = thread.NewTokenContext(ctx, tok2)
+	_, file1Root2, err := buckets.PushPath(ctx, buck.Root.Key, "file1.jpg", file2)
+	require.NoError(t, err)
+	assert.False(t, file1Root2.Cid().Equals(file1Root.Cid()))
+
+	// Check that we now have two logs in the bucket thread
+	info, err := net.GetThread(ctx, dbID, corenet.WithThreadToken(tok2))
+	require.NoError(t, err)
+	assert.Len(t, info.Logs, 2)
 }
 
 func setup(t *testing.T) (core.Config, *c.Client, *hc.Client, *tc.Client, *nc.Client, *bc.Client) {

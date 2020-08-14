@@ -724,6 +724,10 @@ func (s *Service) ListPath(ctx context.Context, req *pb.ListPathRequest) (*pb.Li
 	if err != nil {
 		return nil, err
 	}
+	if _, ok := buck.Items[req.Path]; !ok {
+		return nil, fmt.Errorf("could not resolve path: %s", pth)
+	}
+
 	rep, err := s.pathToPb(ctx, dbID, buck, pth, true)
 	if err != nil {
 		return nil, err
@@ -1336,6 +1340,9 @@ func (s *Service) PullPath(req *pb.PullPathRequest, server pb.API_PullPathServer
 	buck, pth, err := s.getBucketPath(server.Context(), dbID, req.Key, req.Path, dbToken)
 	if err != nil {
 		return err
+	}
+	if _, ok := buck.Items[req.Path]; !ok {
+		return fmt.Errorf("could not resolve path: %s", pth)
 	}
 
 	var fpth path.Resolved

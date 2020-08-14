@@ -626,28 +626,28 @@ func (t *Textile) threadInterceptor() grpc.UnaryServerInterceptor {
 		default:
 			// If we're dealing with an existing thread, make sure that the owner
 			// owns the thread directly or via an API key.
-			threadID, ok := common.ThreadIDFromContext(ctx)
-			if ok {
-				th, err := t.collections.Threads.Get(ctx, threadID, owner)
-				if err != nil {
-					if errors.Is(err, mongo.ErrNoDocuments) {
-						return nil, status.Error(codes.NotFound, "Thread not found")
-					} else {
-						return nil, err
-					}
-				}
-				if owner == nil || !owner.Equals(th.Owner) { // Linter can't see that owner can't be nil
-					return nil, status.Error(codes.PermissionDenied, "User does not own thread")
-
-				}
-				key, _ := mdb.APIKeyFromContext(ctx)
-				if key != nil && key.Type == mdb.UserKey {
-					// Extra user check for user API keys.
-					if key.Key != th.Key {
-						return nil, status.Error(codes.PermissionDenied, "Bad API key")
-					}
-				}
-			}
+			//threadID, ok := common.ThreadIDFromContext(ctx)
+			//if ok {
+			//th, err := t.collections.Threads.Get(ctx, threadID, owner)
+			//if err != nil {
+			//	if errors.Is(err, mongo.ErrNoDocuments) {
+			//		return nil, status.Error(codes.NotFound, "Thread not found")
+			//	} else {
+			//		return nil, err
+			//	}
+			//}
+			//if owner == nil || !owner.Equals(th.Owner) { // Linter can't see that owner can't be nil
+			//	return nil, status.Error(codes.PermissionDenied, "User does not own thread")
+			//
+			//}
+			//key, _ := mdb.APIKeyFromContext(ctx)
+			//if key != nil && key.Type == mdb.UserKey {
+			//	// Extra user check for user API keys.
+			//	if key.Key != th.Key {
+			//		return nil, status.Error(codes.PermissionDenied, "Bad API key")
+			//	}
+			//}
+			//}
 		}
 
 		// Collect the user if we haven't seen them before.

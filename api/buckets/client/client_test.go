@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	bucks "github.com/textileio/textile/buckets"
-
 	ipfsfiles "github.com/ipfs/go-ipfs-files"
 	httpapi "github.com/ipfs/go-ipfs-http-client"
 	"github.com/ipfs/interface-go-ipfs-core/path"
@@ -26,6 +24,7 @@ import (
 	c "github.com/textileio/textile/api/buckets/client"
 	"github.com/textileio/textile/api/common"
 	hc "github.com/textileio/textile/api/hub/client"
+	bucks "github.com/textileio/textile/buckets"
 	"github.com/textileio/textile/core"
 	"github.com/textileio/textile/util"
 	"google.golang.org/grpc"

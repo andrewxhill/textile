@@ -208,9 +208,6 @@ func init() {
 			}
 			if (reader !== instance.owner) {
 			  delete instance.key
-			  delete instance.archives
-			  delete instance.created_at
-			  delete instance.updated_at
 			}
 			var filtered = {}
 			var keys = Object.keys(instance.items)
